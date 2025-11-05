@@ -1,0 +1,11 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+SQLAlchemy==2.0.32
+python-jose==3.3.0
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.1
+pydantic-settings==2.5.2
+psycopg[binary]==3.2.12
+# ML libs are already installed in smartenv with newer versions:
+# numpy, pandas, scikit-learn, torch
