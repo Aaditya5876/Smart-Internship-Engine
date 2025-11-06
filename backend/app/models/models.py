@@ -20,99 +20,108 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False)  # student | university | company | admin
+    role = Column(String(20), nullable=False)
+    client_id = Column(String(50), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     student = relationship("Student", back_populates="user", uselist=False)
 
 
-class University(Base):
-    __tablename__ = "universities"
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False)
-    client_id = Column(String(50), unique=True, nullable=False)  # e.g. client_U1
-    country = Column(String(100))
-    city = Column(String(100))
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-
-    students = relationship("Student", back_populates="university")
-
-
-class Company(Base):
-    __tablename__ = "companies"
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False)
-    client_id = Column(String(50), unique=True, nullable=False)  # e.g. client_C1
-    industry = Column(String(100))
-    country = Column(String(100))
-    city = Column(String(100))
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-
-    jobs = relationship("Job", back_populates="company")
-
-
 class Student(Base):
     __tablename__ = "students"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
-    university_id = Column(Integer, ForeignKey("universities.id"))
-    external_student_id = Column(String(50))  # if you need to map to ML dataset
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    # external identifier used in APIs / FL client mapping
+    student_uid = Column(String(100), unique=True, nullable=False, index=True)
+
     full_name = Column(String(255), nullable=False)
-    gpa = Column(Numeric(3, 2))
-    age = Column(Integer)
-    major = Column(String(255))
-    skills_raw = Column(Text)  # comma-separated skills from UI
+    university = Column(String(255), nullable=True)
+    degree = Column(String(255), nullable=True)
+    semester = Column(Integer, nullable=True)
+    cgpa = Column(Double, nullable=True)
+
+    # store comma-separated skills and locations; API layer can expose them as lists if needed
+    skills_raw = Column(Text, nullable=True)
+    preferred_locations_raw = Column(Text, nullable=True)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="student")
-    university = relationship("University", back_populates="students")
+    recommendations = relationship(
+        "Recommendation",
+        back_populates="student",
+        cascade="all, delete-orphan",
+    )
+    feedback = relationship(
+        "Feedback",
+        back_populates="student",
+        cascade="all, delete-orphan",
+    )
 
 
 class Job(Base):
     __tablename__ = "jobs"
 
-    id = Column(Integer, primary_key=True)
-    company_id = Column(Integer, ForeignKey("companies.id"))
-    job_code = Column(String(50))  # optional external id
-    title = Column(String(255), nullable=False)
-    description = Column(Text)
-    role_type = Column(String(50))     # frontend | backend | data | other
-    work_type = Column(String(50))     # onsite | remote | hybrid
-    salary_min = Column(Numeric(10, 2))
-    salary_max = Column(Numeric(10, 2))
-    required_skills = Column(Text)
-    industry = Column(String(100))
-    location = Column(String(255))
+    id = Column(Integer, primary_key=True, index=True)
+
+    # external identifier used in APIs / FL client mapping
+    job_uid = Column(String(100), unique=True, nullable=False, index=True)
+
+    role = Column(String(255), nullable=False)
+    company = Column(String(255), nullable=False)
+    location = Column(String(255), nullable=True)
+
+    required_skills = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+
+    salary_min = Column(Double, nullable=True)
+    salary_max = Column(Double, nullable=True)
+
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    company = relationship("Company", back_populates="jobs")
+    recommendations = relationship(
+        "Recommendation",
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
+    feedback = relationship(
+        "Feedback",
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
 
 
 class Recommendation(Base):
     __tablename__ = "recommendations"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
     score = Column(Numeric(10, 6), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    # simple unique constraint (student, job)
-    # if using Alembic later we can add: UniqueConstraint("student_id", "job_id")
+    student = relationship("Student", back_populates="recommendations")
+    job = relationship("Job", back_populates="recommendations")
+
+    # if using Alembic later you can add a unique constraint:
+    # UniqueConstraint("student_id", "job_id")
 
 
 class Feedback(Base):
     __tablename__ = "feedback"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
-    recommendation_id = Column(Integer, ForeignKey("recommendations.id"))
+    recommendation_id = Column(Integer, ForeignKey("recommendations.id"), nullable=True)
     liked = Column(Boolean, nullable=False)  # True = liked/applied, False = skipped
-    notes = Column(Text)
+    notes = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    student = relationship("Student", back_populates="feedback")
+    job = relationship("Job", back_populates="feedback")
+    recommendation = relationship("Recommendation")

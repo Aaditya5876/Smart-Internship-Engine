@@ -1,19 +1,211 @@
-
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 from typing import List
-from app.schemas.schemas import StudentIn, StudentOut
-from app.models.models import Student
-from app.services.deps import get_db, require_role
 
-router = APIRouter()
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.schemas.schemas import StudentCreate, StudentOut, StudentUpdate
+from app.models.models import Student, User
+from app.services.deps import get_db, get_current_user, require_admin
+
+router = APIRouter(prefix="/students", tags=["students"])
+
+
+def _list_to_raw(values):
+    if not values:
+        return None
+    return ",".join(values)
+
+
+def _raw_to_list(raw):
+    if not raw:
+        return None
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+@router.post("/", response_model=StudentOut, status_code=status.HTTP_201_CREATED)
+def create_student(
+    payload: StudentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a student profile.
+
+    - If current user is a STUDENT: profile is always linked to their own user_id.
+    - If current user is ADMIN: user_id from payload is used.
+    """
+    if current_user.role not in ("student", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only students or admins can create student profiles",
+        )
+
+    existing = db.query(Student).filter(Student.student_uid == payload.student_uid).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="student_uid already exists",
+        )
+
+    if current_user.role == "student":
+        user_id = current_user.id
+    else:
+        # admin
+        user_id = payload.user_id
+
+    student = Student(
+        user_id=user_id,
+        student_uid=payload.student_uid,
+        full_name=payload.full_name,
+        university=payload.university,
+        degree=payload.degree,
+        semester=payload.semester,
+        cgpa=payload.cgpa,
+        skills_raw=_list_to_raw(payload.skills),
+        preferred_locations_raw=_list_to_raw(payload.preferred_locations),
+    )
+    db.add(student)
+    db.commit()
+    db.refresh(student)
+
+    return StudentOut(
+        id=student.id,
+        user_id=student.user_id,
+        student_uid=student.student_uid,
+        full_name=student.full_name,
+        university=student.university,
+        degree=student.degree,
+        semester=student.semester,
+        cgpa=student.cgpa,
+        skills=_raw_to_list(student.skills_raw),
+        preferred_locations=_raw_to_list(student.preferred_locations_raw),
+        created_at=student.created_at,
+    )
+
 
 @router.get("/", response_model=List[StudentOut])
-def list_students(db: Session = Depends(get_db), user = Depends(require_role("admin","uni"))):
-    return db.query(Student).all()
+def list_students(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """
+    List all students – ADMIN only.
+    """
+    students = db.query(Student).all()
+    return [
+        StudentOut(
+            id=s.id,
+            user_id=s.user_id,
+            student_uid=s.student_uid,
+            full_name=s.full_name,
+            university=s.university,
+            degree=s.degree,
+            semester=s.semester,
+            cgpa=s.cgpa,
+            skills=_raw_to_list(s.skills_raw),
+            preferred_locations=_raw_to_list(s.preferred_locations_raw),
+            created_at=s.created_at,
+        )
+        for s in students
+    ]
 
-@router.post("/", response_model=StudentOut)
-def create_student(data: StudentIn, db: Session = Depends(get_db), user = Depends(require_role("admin","uni"))):
-    st = Student(**data.model_dump())
-    db.add(st); db.commit(); db.refresh(st)
-    return st
+
+@router.get("/{student_uid}", response_model=StudentOut)
+def get_student(
+    student_uid: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    s = db.query(Student).filter(Student.student_uid == student_uid).first()
+    if not s:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+
+    # Only admin or owner student can view
+    if current_user.role != "admin" and s.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view this student",
+        )
+
+    return StudentOut(
+        id=s.id,
+        user_id=s.user_id,
+        student_uid=s.student_uid,
+        full_name=s.full_name,
+        university=s.university,
+        degree=s.degree,
+        semester=s.semester,
+        cgpa=s.cgpa,
+        skills=_raw_to_list(s.skills_raw),
+        preferred_locations=_raw_to_list(s.preferred_locations_raw),
+        created_at=s.created_at,
+    )
+
+
+@router.put("/{student_uid}", response_model=StudentOut)
+def update_student(
+    student_uid: str,
+    payload: StudentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    s = db.query(Student).filter(Student.student_uid == student_uid).first()
+    if not s:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+
+    # Only admin or owner student can update
+    if current_user.role != "admin" and s.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this student",
+        )
+
+    if payload.full_name is not None:
+        s.full_name = payload.full_name
+    if payload.university is not None:
+        s.university = payload.university
+    if payload.degree is not None:
+        s.degree = payload.degree
+    if payload.semester is not None:
+        s.semester = payload.semester
+    if payload.cgpa is not None:
+        s.cgpa = payload.cgpa
+    if payload.skills is not None:
+        s.skills_raw = _list_to_raw(payload.skills)
+    if payload.preferred_locations is not None:
+        s.preferred_locations_raw = _list_to_raw(payload.preferred_locations)
+
+    db.commit()
+    db.refresh(s)
+
+    return StudentOut(
+        id=s.id,
+        user_id=s.user_id,
+        student_uid=s.student_uid,
+        full_name=s.full_name,
+        university=s.university,
+        degree=s.degree,
+        semester=s.semester,
+        cgpa=s.cgpa,
+        skills=_raw_to_list(s.skills_raw),
+        preferred_locations=_raw_to_list(s.preferred_locations_raw),
+        created_at=s.created_at,
+    )
+
+
+@router.delete("/{student_uid}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_student(
+    student_uid: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """
+    Delete student profile – ADMIN only.
+    """
+    s = db.query(Student).filter(Student.student_uid == student_uid).first()
+    if not s:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+
+    db.delete(s)
+    db.commit()
+    return None

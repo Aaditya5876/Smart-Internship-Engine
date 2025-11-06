@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Security (for later, JWT etc.)
     SECRET_KEY: str = "supersecret-change-me"
     ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 
 
     class Config:
         env_file = ".env"   # root .env
