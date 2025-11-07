@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     POSTGRES_PORT: int = 5432
     APP_NAME: str = "Smart Internship Backend"
     FRONTEND_ORIGIN: str = "http://localhost:3000"
+    EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     # Security (for later, JWT etc.)
     SECRET_KEY: str = "supersecret-change-me"

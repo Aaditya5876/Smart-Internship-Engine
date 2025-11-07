@@ -9,11 +9,6 @@ GLOBAL_MODEL_PATH = os.path.join(MODEL_DIR, "global_pfl_model.pt")
 
 
 class PFLRecommender(nn.Module):
-    """
-    Simple PFL model:
-    - shared: global layers aggregated across clients
-    - personal: local layers, one per student (not aggregated)
-    """
     def __init__(self, input_dim: int):
         super().__init__()
         self.shared = nn.Sequential(
@@ -26,7 +21,6 @@ class PFLRecommender(nn.Module):
             nn.Linear(16, 1),
             nn.Sigmoid(),
         )
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.shared(x)
         return self.personal(x)

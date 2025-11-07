@@ -1,4 +1,5 @@
 # app/api/v1/recs.py
+
 from typing import List
 
 import numpy as np
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.schemas.schemas import RecommendIn, RecommendationResponse, RecItem
 from app.models.models import Student, Job, Recommendation, User
 from app.services.deps import get_db, get_current_user
-from app.ml.features import build_skill_vocab, build_feature_vector
+from app.ml.features import build_pair_features, get_input_dim
 from app.ml.model import load_global_model
 
 router = APIRouter(prefix="/recs", tags=["recs"])
@@ -22,7 +23,7 @@ def recommend(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Get job recommendations for a student using the trained PFL global model.
+    Recommend internships using the PFL semantic model.
 
     - STUDENT can only request for themselves.
     - ADMIN can request for any student.
@@ -47,19 +48,15 @@ def recommend(
     if not jobs:
         raise HTTPException(status_code=404, detail="No active jobs found")
 
-    # Build vocab and infer input dimension (must match training)
-    vocab = build_skill_vocab(db)
-    input_dim = (len(vocab) + 2) + (len(vocab) + 3)
-
-    # Load global PFL model
+    input_dim = get_input_dim()
     model = load_global_model(input_dim)
     model.eval()
 
-    # Build feature matrix
     X_list = []
-    job_refs = []
+    job_refs: List[Job] = []
+
     for job in jobs:
-        x = build_feature_vector(student, job, vocab)
+        x = build_pair_features(student, job)
         X_list.append(x)
         job_refs.append(job)
 
@@ -69,7 +66,6 @@ def recommend(
     with torch.no_grad():
         scores = model(X_tensor).squeeze().numpy()
 
-    # Rank jobs by score
     ranked = sorted(zip(job_refs, scores), key=lambda x: x[1], reverse=True)
     top = ranked[: payload.top_k]
 
@@ -84,7 +80,7 @@ def recommend(
                 role=job.role,
                 company=job.company,
                 score=float(score),
-                required_skills=(job.required_skills or ""),
+                required_skills=job.required_skills or "",
                 salary_min=job.salary_min,
                 salary_max=job.salary_max,
             )

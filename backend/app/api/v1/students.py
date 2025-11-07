@@ -1,11 +1,24 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+    UploadFile,
+    File,
+)
 from sqlalchemy.orm import Session
 
 from app.schemas.schemas import StudentCreate, StudentOut, StudentUpdate
 from app.models.models import Student, User
-from app.services.deps import get_db, get_current_user, require_admin
+from app.services.deps import (
+    get_db,
+    get_current_user,
+    require_admin,
+    require_student,
+)
+from app.services.cv_parser import extract_text_from_pdf, parse_cv_text
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -209,3 +222,73 @@ def delete_student(
     db.delete(s)
     db.commit()
     return None
+
+@router.post("/upload-cv", response_model=StudentOut, status_code=status.HTTP_201_CREATED)
+def upload_cv(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    """
+    Upload a CV (PDF), parse it, and create or update the student's profile.
+
+    - Only users with role 'student' can call this.
+    - If a Student profile already exists for this user, we update missing fields.
+    - Otherwise, we create a new Student entry with a generated student_uid.
+    """
+    # 1. Extract raw text from CV
+    text = extract_text_from_pdf(file)
+
+    # 2. Parse structured fields
+    parsed = parse_cv_text(text)
+
+    # 3. Find or create student profile
+    student = db.query(Student).filter(Student.user_id == current_user.id).first()
+    creating = False
+
+    if not student:
+        creating = True
+        student = Student(
+            user_id=current_user.id,
+            student_uid=f"stu_{current_user.id}",  # simple deterministic uid
+        )
+
+    # 4. Apply parsed values (do not blindly overwrite everything)
+    if parsed.get("full_name") and not student.full_name:
+        student.full_name = parsed["full_name"]
+
+    if parsed.get("degree"):
+        student.degree = parsed["degree"]
+
+    if parsed.get("university"):
+        student.university = parsed["university"]
+
+    if parsed.get("cgpa") is not None:
+        student.cgpa = parsed["cgpa"]
+
+    skills = parsed.get("skills") or []
+    if skills:
+        # If there are existing skills, merge them; else just set parsed skills
+        existing = _raw_to_list(student.skills_raw) or []
+        merged = sorted(set(existing) | set(skills))
+        student.skills_raw = _list_to_raw(merged)
+
+    if creating:
+        db.add(student)
+
+    db.commit()
+    db.refresh(student)
+
+    return StudentOut(
+        id=student.id,
+        user_id=student.user_id,
+        student_uid=student.student_uid,
+        full_name=student.full_name,
+        university=student.university,
+        degree=student.degree,
+        semester=student.semester,
+        cgpa=student.cgpa,
+        skills=_raw_to_list(student.skills_raw),
+        preferred_locations=_raw_to_list(student.preferred_locations_raw),
+        created_at=student.created_at,
+    )

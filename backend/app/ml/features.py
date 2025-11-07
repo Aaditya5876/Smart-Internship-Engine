@@ -1,94 +1,110 @@
 # app/ml/features.py
-from typing import Dict, List, Tuple, Optional
+
+from typing import Tuple
 
 import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models.models import Student, Job, Feedback
+from app.ml.embeddings import encode_texts, get_embedding_dim
 
 
-def _split_skills(text: Optional[str]) -> List[str]:
-    if not text:
-        return []
-    # we assume comma-separated or space-separated skills
+def _student_text(student: Student) -> str:
+    """
+    Build a single text string describing the student.
+    Works for IT, management, banking, etc.
+    """
     parts = []
-    for chunk in text.replace(";", ",").split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        parts.extend(chunk.lower().split())
-    return list(set(parts))  # unique
+
+    if student.full_name:
+        parts.append(student.full_name)
+
+    if student.degree:
+        parts.append(student.degree)
+
+    if student.university:
+        parts.append(student.university)
+
+    if student.skills_raw:
+        parts.append(student.skills_raw)
+
+    if student.preferred_locations_raw:
+        parts.append("prefers locations: " + student.preferred_locations_raw)
+
+    if student.cgpa is not None:
+        parts.append(f"CGPA {student.cgpa}")
+
+    return " ; ".join(parts)
 
 
-def build_skill_vocab(db: Session) -> Dict[str, int]:
-    vocab = {}
-    idx = 0
+def _job_text(job: Job) -> str:
+    """
+    Build a single text string describing the job/internship.
+    Again, domain-agnostic.
+    """
+    parts = []
 
-    # from students
-    students = db.query(Student).all()
-    for s in students:
-        skills = _split_skills(s.skills_raw)
-        for sk in skills:
-            if sk not in vocab:
-                vocab[sk] = idx
-                idx += 1
+    if job.role:
+        parts.append(job.role)
 
-    # from jobs
-    jobs = db.query(Job).all()
-    for j in jobs:
-        skills = _split_skills(j.required_skills)
-        for sk in skills:
-            if sk not in vocab:
-                vocab[sk] = idx
-                idx += 1
+    if job.company:
+        parts.append(job.company)
 
-    return vocab
+    if job.location:
+        parts.append(job.location)
 
+    if job.required_skills:
+        parts.append("skills: " + job.required_skills)
 
-def encode_student(student: Student, vocab: Dict[str, int]) -> np.ndarray:
-    v = np.zeros(len(vocab) + 2, dtype=np.float32)  # skills + [cgpa, bias]
+    if job.description:
+        parts.append(job.description)
 
-    # skills
-    for sk in _split_skills(student.skills_raw):
-        if sk in vocab:
-            v[vocab[sk]] = 1.0
+    if job.salary_min is not None or job.salary_max is not None:
+        parts.append(f"salary range {job.salary_min} to {job.salary_max}")
 
-    # cgpa
-    cgpa_idx = len(vocab)
-    v[cgpa_idx] = float(student.cgpa or 0.0)
-
-    # bias term
-    v[cgpa_idx + 1] = 1.0
-    return v
+    return " ; ".join(parts)
 
 
-def encode_job(job: Job, vocab: Dict[str, int]) -> np.ndarray:
-    v = np.zeros(len(vocab) + 3, dtype=np.float32)  # skills + [salary_min, salary_max, bias]
+def build_pair_features(student: Student, job: Job) -> np.ndarray:
+    """
+    Encode (student, job) as a semantic feature vector.
 
-    for sk in _split_skills(job.required_skills):
-        if sk in vocab:
-            v[vocab[sk]] = 1.0
+    We:
+    - encode student_text and job_text into sentence embeddings s, j
+    - build concatenation [s, j, |s-j|, s*j]
 
-    base = len(vocab)
-    v[base] = float(job.salary_min or 0.0)
-    v[base + 1] = float(job.salary_max or 0.0)
-    v[base + 2] = 1.0  # bias
-    return v
+    This is a very standard matching architecture used in industrial recommenders.
+    """
+    s_text = _student_text(student)
+    j_text = _job_text(job)
+
+    embs = encode_texts([s_text, j_text])
+    s_vec = embs[0]  # (D,)
+    j_vec = embs[1]  # (D,)
+
+    diff = np.abs(s_vec - j_vec)
+    prod = s_vec * j_vec
+
+    pair = np.concatenate([s_vec, j_vec, diff, prod], axis=0)  # shape (4D,)
+    pair = pair.astype(np.float32)
+    return pair
 
 
-def build_feature_vector(student: Student, job: Job, vocab: Dict[str, int]) -> np.ndarray:
-    s_vec = encode_student(student, vocab)
-    j_vec = encode_job(job, vocab)
-    return np.concatenate([s_vec, j_vec], axis=0)
+def get_input_dim() -> int:
+    """
+    Total input dimension to the PFL model = 4 * embedding_dim.
+    """
+    d = get_embedding_dim()
+    return 4 * d
 
 
 def get_student_feedback_dataset(
     db: Session,
     student: Student,
-    vocab: Dict[str, int],
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Builds (X, y) for a given student from Feedback table.
+    Build (X, y) for one student from Feedback table using semantic features.
+
     y = 1 if liked=True, 0 otherwise.
     """
     q = (
@@ -102,8 +118,9 @@ def get_student_feedback_dataset(
 
     X_list = []
     y_list = []
+
     for fb, job in rows:
-        x = build_feature_vector(student, job, vocab)
+        x = build_pair_features(student, job)
         X_list.append(x)
         y_list.append(1.0 if fb.liked else 0.0)
 

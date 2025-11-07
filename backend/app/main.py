@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
-from app.api.v1 import auth, students, jobs, recs, feedback
+from app.api.v1 import auth, students, jobs, recs, feedback, ml, fl
 
 # settings = get_settings()
 settings = get_settings
@@ -26,3 +26,5 @@ app.include_router(students.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(recs.router, prefix="/api/v1")
 app.include_router(feedback.router, prefix="/api/v1")
+app.include_router(ml.router, prefix="/api/v1")
+app.include_router(fl.router, prefix="/api/v1") 
