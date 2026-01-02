@@ -10,31 +10,28 @@ import torch.nn as nn
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
-from app.models.models import Student, User
+from app.models.models import Student
 from app.ml.model import PFLRecommender, get_shared_state, set_shared_state
 from app.ml.features import get_input_dim, get_student_feedback_dataset
 
 
 API_BASE = "http://127.0.0.1:8000/api/v1/fl"
-# In a real deployment, API_BASE would be the URL of the central aggregator.
+# In real deployment, this is the URL of the central aggregator service.
 
 
-def build_client_dataset(db: Session, client_id: str):
+def build_client_dataset(db: Session):
     """
-    Collect (X, y) for ALL students that belong to this client_id.
+    PURE FL CLIENT:
 
-    Here we assume:
-    - User table has a 'client_id' field indicating which organization they belong to.
+    This function uses ALL students in this local DB,
+    because this whole DB belongs to one organization (one FL client).
+    No more filtering by client_id.
     """
-    X_list = []
-    y_list = []
 
-    students = (
-        db.query(Student)
-        .join(User, User.id == Student.user_id)
-        .filter(User.client_id == client_id)
-        .all()
-    )
+    X_list: List[np.ndarray] = []
+    y_list: List[np.ndarray] = []
+
+    students = db.query(Student).all()
 
     for s in students:
         X_s, y_s = get_student_feedback_dataset(db, s)
@@ -53,23 +50,24 @@ def build_client_dataset(db: Session, client_id: str):
 
 def train_local_client(client_id: str, admin_token: str, epochs: int = 3):
     """
-    This is the LOCAL FL CLIENT procedure:
+    PURE FL CLIENT TRAINING ROUND:
 
-    1. Get global shared weights from aggregator.
-    2. Build local dataset from *local DB* (no data leaves this node).
-    3. Train locally.
-    4. Send updated shared weights back to aggregator.
+    1. Pull global shared weights from aggregator.
+    2. Build local dataset from this node's DB (ALL students + feedback).
+    3. Train locally for a few epochs (PFL).
+    4. Push updated shared weights back to aggregator.
     """
+
     db = SessionLocal()
     try:
-        X, y = build_client_dataset(db, client_id)
+        X, y = build_client_dataset(db)
         if X.shape[0] == 0:
             print(f"[{client_id}] No local data to train on.")
             return
 
         input_dim = get_input_dim()
 
-        # 1. Download global shared state from aggregator
+        # ---- 1. Download global shared state from aggregator ----
         headers = {"Authorization": f"Bearer {admin_token}"}
         resp = requests.get(f"{API_BASE}/global-model", headers=headers)
         resp.raise_for_status()
@@ -78,7 +76,7 @@ def train_local_client(client_id: str, admin_token: str, epochs: int = 3):
 
         shared_state = {k: torch.tensor(v, dtype=torch.float32) for k, v in shared_json.items()}
 
-        # 2. Local model
+        # ---- 2. Initialize local PFL model with global shared weights ----
         model = PFLRecommender(input_dim)
         set_shared_state(model, shared_state)
 
@@ -96,15 +94,18 @@ def train_local_client(client_id: str, admin_token: str, epochs: int = 3):
             loss.backward()
             optimizer.step()
 
-        # 3. Extract updated shared weights and send back to aggregator
+        # ---- 3. Extract updated shared weights ----
         updated_shared = get_shared_state(model)
-        json_state = {k: v.detach().cpu().numpy().tolist() for k, v in updated_shared.items()}
+        json_state: Dict[str, List[float]] = {
+            k: v.detach().cpu().numpy().tolist() for k, v in updated_shared.items()
+        }
 
         update_payload = {
-            "client_id": client_id,
+            "client_id": client_id,     # just an identifier string for logs
             "shared_state": json_state,
         }
 
+        # ---- 4. Submit update to aggregator ----
         resp2 = requests.post(f"{API_BASE}/submit-update", json=update_payload, headers=headers)
         resp2.raise_for_status()
         print(f"[{client_id}] Local training done and update sent to aggregator.")
@@ -115,8 +116,8 @@ def train_local_client(client_id: str, admin_token: str, epochs: int = 3):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--client-id", required=True, help="Logical client ID (e.g. university code)")
-    parser.add_argument("--admin-token", required=True, help="Admin JWT token for authent icating with aggregator")
+    parser.add_argument("--client-id", required=True, help="ID for this FL client node (e.g. uni_a)")
+    parser.add_argument("--admin-token", required=True, help="Admin JWT token for calling aggregator /fl APIs")
     parser.add_argument("--epochs", type=int, default=3)
     args = parser.parse_args()
 

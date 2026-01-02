@@ -1,0 +1,6 @@
+# ML / Recommendation dependencies (install only when you want /recs enabled)
+torch==2.6.0
+numpy==2.3.2
+pandas==2.3.3
+scikit-learn==1.7.1
+sentence-transformers==3.0.1

@@ -1,44 +1,58 @@
-# app/ml/embeddings.py
+# backend/app/ml/embeddings.py
 
-from functools import lru_cache
 from typing import List
+from fastapi import HTTPException
 
-import numpy as np
-from sentence_transformers import SentenceTransformer
 
-from app.core.config import get_settings
-settings = get_settings
+DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
-@lru_cache(maxsize=1)
-def get_embedding_model() -> SentenceTransformer:
+
+def _require_sentence_transformers():
+    try:
+        from sentence_transformers import SentenceTransformer  # noqa: F401
+        return True
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Embedding service is not enabled because ML dependencies are missing. "
+                "Install with: pip install -r requirements-ml.txt"
+            ),
+        )
+
+
+def get_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL):
     """
-    Load a shared sentence embedding model once per process.
-
-    This model is the SAME across all organizations, which is how we get
-    cross-organizational semantic alignment (RQ2).
+    Lazy-load SentenceTransformer model.
+    This keeps backend startup clean if ML deps are not installed.
     """
-    model_name = getattr(
-        settings,
-        "EMBEDDING_MODEL_NAME",
-        "sentence-transformers/all-MiniLM-L6-v2",
-    )
+    _require_sentence_transformers()
+    from sentence_transformers import SentenceTransformer
+
     return SentenceTransformer(model_name)
 
 
-def get_embedding_dim() -> int:
-    return get_embedding_model().get_sentence_embedding_dimension()
-
-
-def encode_texts(texts: List[str]) -> np.ndarray:
+def encode_texts(texts: List[str], model_name: str = DEFAULT_EMBEDDING_MODEL):
     """
-    Encode a list of texts into normalized embeddings.
-
-    Shape: (len(texts), embedding_dim)
+    Encode a list of texts into embeddings (numpy array).
     """
-    model = get_embedding_model()
-    emb = model.encode(
-        texts,
-        convert_to_numpy=True,
-        normalize_embeddings=True,  # cosine geometry
-    )
-    return emb
+    model = get_embedding_model(model_name)
+    return model.encode(texts, convert_to_numpy=True)
+
+
+def get_embedding_dim(model_name: str = DEFAULT_EMBEDDING_MODEL) -> int:
+    """
+    Return embedding dimension for the configured model.
+
+    IMPORTANT:
+    - If ML deps are not installed, we return a safe default for MiniLM (384)
+      so the backend can still start and other APIs can run.
+    - When ML deps are installed, we compute it from the model.
+    """
+    try:
+        model = get_embedding_model(model_name)
+        # SentenceTransformer exposes embedding dimension
+        return int(model.get_sentence_embedding_dimension())
+    except HTTPException:
+        # Default dimension for all-MiniLM-L6-v2
+        return 384

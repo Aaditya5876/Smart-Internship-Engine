@@ -19,7 +19,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(500), nullable=False)
     role = Column(String(20), nullable=False)
     client_id = Column(String(50), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
@@ -60,6 +60,11 @@ class Student(Base):
         back_populates="student",
         cascade="all, delete-orphan",
     )
+    interactions = relationship(
+        "Interaction",
+        back_populates="student",
+        cascade="all, delete-orphan",
+    )
 
 
 class Job(Base):
@@ -93,6 +98,11 @@ class Job(Base):
         back_populates="job",
         cascade="all, delete-orphan",
     )
+    interactions = relationship(
+        "Interaction",
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
 
 
 class Recommendation(Base):
@@ -110,6 +120,30 @@ class Recommendation(Base):
     # if using Alembic later you can add a unique constraint:
     # UniqueConstraint("student_id", "job_id")
 
+class Interaction(Base):
+    """User→Job interaction log.
+
+    This table is the core signal used for both:
+    1) Online analytics (what users did)
+    2) Offline training (implicit feedback / negative sampling)
+
+    event_type examples: view, click, save, apply
+    """
+
+    __tablename__ = "interactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False, index=True)
+
+    event_type = Column(String(50), nullable=False, index=True)
+    client_id = Column(String(50), nullable=True, index=True)
+    meta = Column(Text, nullable=True)
+
+    timestamp = Column(TIMESTAMP(timezone=True), server_default=func.now(), index=True)
+
+    student = relationship("Student", back_populates="interactions")
+    job = relationship("Job", back_populates="interactions")
 
 class Feedback(Base):
     __tablename__ = "feedback"
